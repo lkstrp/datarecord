@@ -20,7 +20,7 @@ import pytest
 
 from datarecord import Revision, Workspace
 from datarecord.mutable import WorkingRecord
-from datarecord.schema.specs import Dimension
+from datarecord.schema.specs import AttributeSpec, Dimension
 from datarecord.store import manifest
 from datarecord.store.files import Absent, PreconditionFailedError
 from datarecord.store.manifest import read_schema
@@ -346,6 +346,53 @@ def test_a_fold_reads_under_a_widened_schema(store, materialised):
     assert "scenario" not in flags.varies
     assert "scenario" not in flags.broadcast, "a missing flag field reads as unset"
     assert "snapshot" in flags.broadcast, "a field the fold had still reads"
+
+
+@pytest.mark.parametrize("materialised", [False, True], ids=["live", "materialised"])
+def test_a_fold_reads_after_an_attribute_widens_by_a_partial_dim(store, materialised):
+    """An attribute's rows survive its `dims` widening by a dim already in `partial`.
+
+    The fold was made while the attribute was over `entity` alone, so its
+    flag structs hold `scenario` with `varies` and `broadcast` both false for
+    the attribute's rows. The widening is compatible, an unset dim is NULL and
+    NULL means every label, so the row reads back with `scenario` NULL, from
+    the fold table and from the map on disk alike.
+
+    Notes
+    -----
+    - [versioning](https://energy-models.github.io/datarecord/design/model/schema/#versioning)
+    - [the owner map](https://energy-models.github.io/datarecord/design/layers/resolution/#owner-map)
+    """
+
+    def declared(dims):
+        attributes = {
+            "Generator": {"p_max_pu": AttributeSpec(dtype="float", dims=dims)}
+        }
+        return schema(partial={"scenario"}, attributes=attributes)
+
+    write_schema(declared({"entity"}), store)
+    revision = empty_root(store)
+    write_component(revision, "Generator", [{"entity": "wind"}])
+    write_attribute(
+        store.layer_dir(revision.id), "p_max_pu", [{"entity": "wind", "value": 0.4}]
+    )
+    assert revision.record.attributes["p_max_pu"].df()["value"].tolist() == [0.4]
+    if materialised:
+        revision.materialise()
+
+    write_schema(declared({"entity", "scenario"}), store)
+    after = store.revision(revision.id)
+    if materialised:
+        after = empty_child(after)
+    rows = after.record.attributes["p_max_pu"].df()
+    assert rows["value"].tolist() == [0.4], (
+        "a row written before the attribute widened still reads"
+    )
+    assert rows["scenario"].isna().all(), "the dim the attribute gained reads as NULL"
+    flags = after.record.flags()["p_max_pu"]
+    assert "scenario" not in flags.varies | flags.broadcast, (
+        "a dim the attribute gained after the fold still reads as unset"
+    )
 
 
 def test_a_staged_tail_folds_onto_a_fold_table_from_before_a_widening(store):

@@ -307,6 +307,9 @@ All notable changes to datarecord are documented here. The format follows
 
 ### Fixed
 
+- Rows written before an attribute's `dims` widened by a `partial` dim read
+  back from a fold or materialised owner map made under the narrower schema,
+  with the gained dim NULL.
 - The writer's check that no coordinate of a file is held twice groups 64-bit
   hashes in passes of at most 100 million rows, so a file of hundreds of
   millions of rows is checked in bounded memory and spill.

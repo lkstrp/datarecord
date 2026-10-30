@@ -97,7 +97,8 @@ def _as_stored(om: DuckDBPyRelation, dims: tuple[str, ...]) -> DuckDBPyRelation:
     the layer stored it, and a key its layer wrote both ways appears once per
     way. A flag field NULL from `UNION ALL BY NAME`, or missing from a map
     folded before the dim was declared, is a dim no row set: `varies` false,
-    `broadcast` true.
+    `broadcast` true. So is a pair present with both false, from a map folded
+    while the attribute was not over the dim.
 
     Notes
     -----
@@ -107,15 +108,11 @@ def _as_stored(om: DuckDBPyRelation, dims: tuple[str, ...]) -> DuckDBPyRelation:
     """
     types = dict(zip(om.columns, om.types, strict=True))
     for d in dims:
+        varies = struct_field(om, "varies", d, lit(False))  # noqa: FBT003
+        broadcast = struct_field(om, "broadcast", d, lit(True)) | ~varies  # noqa: FBT003
         stored = fn.list_concat(
-            duckdb.CaseExpression(
-                struct_field(om, "varies", d, lit(False)),  # noqa: FBT003
-                fn.list_value(col(d)),
-            ),
-            duckdb.CaseExpression(
-                struct_field(om, "broadcast", d, lit(True)),  # noqa: FBT003
-                fn.list_value(lit(None).cast(types[d])),
-            ),
+            duckdb.CaseExpression(varies, fn.list_value(col(d))),
+            duckdb.CaseExpression(broadcast, fn.list_value(lit(None).cast(types[d]))),
         )
         om = om.project(
             *(col(c) for c in types if c != d),
