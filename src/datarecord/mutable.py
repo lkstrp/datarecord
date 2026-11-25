@@ -1456,8 +1456,8 @@ class WorkingRecord(Record):
             ),
             broadcast=own_dims,
         )
-        self._complete_outside_partial(attribute, table)
         self._overwrite_crossing(attribute, shaped, table)
+        self._complete_outside_partial(attribute, table)
         self._refuse_crossing(attribute)
 
     def _overwrite_crossing(
@@ -1471,6 +1471,10 @@ class WorkingRecord(Record):
         is what the `set` staged, and an earlier row is any other of
         `attribute`'s staged rows. A staged row already naming both keeps its
         value, being the more specific.
+
+        Runs before `_complete_outside_partial`, so the row naming both is
+        staged by the time a fill along a dimension outside `partial` takes
+        the value of the most specific staged row covering its coordinate.
 
         Notes
         -----
@@ -1524,7 +1528,9 @@ class WorkingRecord(Record):
         """Refuse two staged rows of `attribute` that cross where no staged row names both.
 
         The staged layer's rows are then those of a layer the writer accepts,
-        so the fold settles them as it does a written layer's.
+        so the fold settles them as it does a written layer's. Runs last, after
+        the overwrite and the fills, so a frame whose own rows cross rolls the
+        whole edit back.
 
         Raises
         ------
@@ -1606,7 +1612,8 @@ class WorkingRecord(Record):
         every coordinate a staged row covers is dropped (`uncovered`), so no
         fill sits beside a staged row neither of which is the more specific.
         A staged row leaving a dimension outside `partial` NULL is itself written out along
-        the labels the base rows it crosses name there (`_spread`).
+        the labels the base rows it crosses name there, each coordinate taking
+        the value of the most specific staged row covering it (`_spread`).
 
         Idempotent, which is what lets it run per insert instead of once: the
         anti-join drops any coordinate the table already covers, so a second
@@ -2346,10 +2353,12 @@ def _spread(
 
     A base row it reaches names an `outside` dimension the staged row leaves NULL and is
     not covered by it on `scope`: the staged row names a `scope` column the
-    base row leaves NULL. The row written takes every label either names, and
-    the staged row's value. Of the staged rows covering one coordinate the one
-    naming the most `scope` columns is kept, and a coordinate `staged` already
-    holds is skipped, which keeps it idempotent. `None` where no pair reaches.
+    base row leaves NULL. The coordinate written takes every label either
+    names, and the value of the most specific staged row covering it, by the
+    broadcast rule. That row is unique, since `_overwrite_crossing` has staged
+    a row naming both wherever two staged rows cross. A coordinate `staged`
+    already holds is skipped, which keeps it idempotent. `None` where no pair
+    reaches.
 
     Split by which columns each side leaves NULL, each part an equi-join over
     the columns both name, as `_delete_covered` does.
@@ -2376,21 +2385,51 @@ def _spread(
             on = [col("s", c) == col("b", c) for c in matched if c in shared]
             parts.append(
                 join_on(left, right, on).project(
-                    *(
-                        col("b" if c in base_only else "s", c).alias(c)
-                        for c in staged.columns
-                    ),
-                    lit(len(staged_pattern & set(scope))).alias("_named"),
+                    *(col("b" if c in base_only else "s", c).alias(c) for c in columns)
                 )
             )
     if not parts:
         return None
-    rel = _most_named(reduce(DuckDBPyRelation.union, parts), columns, staged.columns)
+    reached = reduce(DuckDBPyRelation.union, parts).distinct()
+    rel = _most_named(_covering(reached, staged, columns), columns, staged.columns)
     return (
         rel.set_alias("r")
         .join(staged.set_alias("t"), null_safe("r", "t", columns), how="anti")
         .distinct()
     )
+
+
+def _covering(
+    reached: DuckDBPyRelation, staged: DuckDBPyRelation, columns: Sequence[str]
+) -> DuckDBPyRelation:
+    """Each `staged` row covering a coordinate of `reached`, at that coordinate, with the count it names as `_named`.
+
+    A staged row covers a coordinate where it is equal or NULL on each of
+    `columns`. `staged` is split by which dimensions it leaves NULL, each part
+    an equi-join over the columns it names, as `uncovered` does.
+
+    Notes
+    -----
+    - [the broadcast rule](https://energy-models.github.io/datarecord/reference/data-model/#the-broadcast-rule)
+    """
+    dims = [c for c in columns if c != "attribute"]
+    parts = []
+    for pattern in null_patterns(staged, dims):
+        on = [
+            col("r", c) == col("t", c) for c in columns if c not in dims or c in pattern
+        ]
+        parts.append(
+            reached.set_alias("r")
+            .join(staged.filter(has_pattern(dims, pattern)).set_alias("t"), ex_all(on))
+            .project(
+                *(
+                    col("r" if c in columns else "t", c).alias(c)
+                    for c in staged.columns
+                ),
+                lit(len(pattern)).alias("_named"),
+            )
+        )
+    return reduce(DuckDBPyRelation.union, parts)
 
 
 def _most_named(

@@ -25,6 +25,13 @@ All notable changes to datarecord are documented here. The format follows
   declares on a dimension of the network and the network lacks, such as a
   snapshot property another tool added. The store fills its column from
   `base`, where the store used to refuse the export as removing the property.
+- Two crossing `set` calls whose rows spread along a dimension outside
+  `partial` no longer stage two rows at one coordinate, which made the
+  attribute unreadable, or let the earlier value win where the two meet. The
+  later set wins at each coordinate they share, in either order and with two
+  dimensions outside `partial`: the fill along such a dimension takes the
+  value of the most specific staged row covering the coordinate, by the
+  broadcast rule.
 
 ## v0.1.0a2 (2026-11-24)
 

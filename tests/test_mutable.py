@@ -10,6 +10,7 @@ Notes
 """
 
 import gc
+import itertools
 import re
 from pathlib import Path
 
@@ -671,6 +672,139 @@ def test_two_edits_on_one_series_outside_partial_both_land(staged, root):
     assert set(rows["entity"]) == {"Manchester Wind"}, (
         "an axis outside `partial` restates the touched map row's extent, not every map row's"
     )
+
+
+# Two bases each failing on its own: `twin` staged two rows at (x, y, 0, ...),
+# `stale` let the earlier set win at a coordinate one base row reached.
+CROSSING_BASES = {
+    "twin": [
+        ({"a": "x"}, 0, 1.0),
+        ({"b": "y"}, 0, 2.0),
+        ({"a": "x", "b": "y"}, 0, 3.0),
+    ],
+    "stale": [({"a": "x"}, 0, 1.0), ({"b": "y"}, 1, 2.0)],
+}
+
+
+def _crossing_base(store, outside, base):
+    """A committed root over `a`, `b` in `partial` and `outside`, holding `base`'s rows of `v`.
+
+    Each row of `base` names its labels of `a` and `b` and one label on every
+    dimension of `outside`.
+    """
+    dims = ["a", "b", *outside]
+    revision = empty_root(
+        store,
+        Schema(
+            dimensions={
+                "a": Dimension(dtype="str"),
+                "b": Dimension(dtype="str"),
+                **{d: Dimension(dtype="int") for d in outside},
+            },
+            attributes={"v": AttributeSpec(dtype="float", dims=set(dims))},
+            partial=frozenset({"a", "b"}),
+        ),
+    ).commit()
+    with revision.record as record, WorkingRecord(record) as staged:
+        staged.add("a", ["x"])
+        staged.add("b", ["y"])
+        for d in outside:
+            staged.add(d, [0, 1])
+        frame = pd.DataFrame(
+            [
+                {
+                    "a": None,
+                    "b": None,
+                    **named,
+                    **dict.fromkeys(outside, at),
+                    "value": v,
+                }
+                for named, at, v in CROSSING_BASES[base]
+            ],
+            columns=[*dims, "value"],
+        )
+        staged.set("v", frame)
+        return store.commit(staged)
+
+
+def _value_at(rows, coordinate):
+    """The value `rows` hold at `coordinate` by the broadcast rule: the covering row naming most."""
+    covering = rows
+    for c, label in coordinate.items():
+        covering = covering[covering[c].isna() | (covering[c] == label)]
+    named = covering[list(coordinate)].notna().sum(axis=1)
+    most = covering[named == named.max()]
+    assert len(most) == 1, f"one most specific row at {coordinate}"
+    return most["value"].iloc[0]
+
+
+def _met(outside):
+    """Every coordinate where a row naming `a=x` meets one naming `b=y`."""
+    return [
+        {"a": "x", "b": "y", **dict(zip(outside, labels, strict=True))}
+        for labels in itertools.product([0, 1], repeat=len(outside))
+    ]
+
+
+@pytest.mark.parametrize("base", sorted(CROSSING_BASES))
+@pytest.mark.parametrize("order", ["a-first", "b-first"])
+@pytest.mark.parametrize("outside", [("h",), ("h", "s")], ids=["one", "two"])
+def test_crossing_sets_along_dimensions_outside_partial_later_wins(
+    store, outside, order, base
+):
+    """Two crossing `set` calls spreading along a dimension outside `partial` stage one row per coordinate.
+
+    Each reaches the meeting coordinates through a different base row, so the
+    fill along the outside dimension has to take the most specific staged row's
+    value there, which is the later set's.
+
+    Notes
+    -----
+    - [edits](https://energy-models.github.io/datarecord/reference/editing/#edits)
+    - [a dimension outside `partial`](https://energy-models.github.io/datarecord/reference/resolution/#a-dimension-outside-partial)
+    """
+    revision = _crossing_base(store, outside, base)
+    edits = [("a", "x", 5.0), ("b", "y", 7.0)]
+    if order == "b-first":
+        edits.reverse()
+    dims = ["a", "b", *outside]
+    with revision.record as record, WorkingRecord(record) as staged:
+        for d, label, value in edits:
+            staged.set("v", value, **{d: label})
+        later = edits[-1][2]
+
+        rows = staged.attributes["v"].df()
+        assert rows.groupby(dims, dropna=False).size().max() == 1, (
+            "one staged row per coordinate"
+        )
+        for at in _met(outside):
+            assert _value_at(rows, at) == later, f"the later set wins at {at}"
+
+        child = store.commit(staged)
+
+    layer = _layer_rows(child, "v")
+    assert layer.groupby(dims, dropna=False).size().max() == 1, (
+        "the written layer holds one row per coordinate"
+    )
+    with child.record as committed:
+        written = committed.attributes["v"].df()
+    for at in _met(outside):
+        assert _value_at(written, at) == later, f"the commit reads {later} at {at}"
+
+
+def test_a_frame_whose_own_rows_cross_outside_partial_is_refused(store):
+    """A frame naming `a=x` and `b=y` in two rows and both in none is refused, and stages nothing."""
+    revision = _crossing_base(store, ("h",), "stale")
+    with revision.record as record, WorkingRecord(record) as staged:
+        before = _rows(staged.attributes["v"])
+        crossing = pd.DataFrame(
+            {"a": ["x", None], "b": [None, "y"], "h": [None, None], "value": [5.0, 7.0]}
+        )
+        with pytest.raises(ValueError, match="neither is the more specific"):
+            staged.set("v", crossing)
+        assert _rows(staged.attributes["v"]) == before, (
+            "the refused edit staged nothing"
+        )
 
 
 # -- add and remove (https://energy-models.github.io/datarecord/reference/editing/#add-and-remove) --------------------------------------------------
