@@ -123,31 +123,6 @@ _SUB_NETWORK_CARRIER = "The carrier of a sub-network's buses."
 _GEOMETRY = "A shape outlining the label, as WKT in the CRS `meta` names."
 _SHAPE_DIM = "A label that shapes outline."
 REQUIRED_DIMS = frozenset({SNAPSHOT, PERIOD, SCENARIO})
-#: The attributes PyPSA keeps the same in every scenario: mirrors the local
-#: `INVARIANT_ATTRS` of `pypsa.consistency.check_scenario_invariant_attributes`.
-_SCENARIO_INVARIANT = frozenset(
-    {
-        "name",
-        "bus",
-        "type",
-        "p_nom_extendable",
-        "s_nom_extendable",
-        "e_nom_extendable",
-        "p_nom_mod",
-        "s_nom_mod",
-        "e_nom_mod",
-        "committable",
-        "sign",
-        "carrier",
-        "weight",
-        "p_nom_opt",
-        "s_nom_opt",
-        "e_nom_opt",
-        "build_year",
-        "lifetime",
-        "active",
-    }
-)
 #: The `meta` key naming, per component type, the custom static columns it was
 #: exported with: the part of `_taken`'s vocabulary the registry lacks.
 _CUSTOM = "custom_columns"
@@ -873,9 +848,12 @@ def _static_dims(name: str, over: str) -> frozenset[str]:
     """The dimensions of attribute `name` over `over`, less `snapshot`.
 
     `scenario` is among them unless PyPSA keeps `name` the same in every
-    scenario (`_SCENARIO_INVARIANT`).
+    scenario, by its own rule `pypsa.constants.RE_INVARIANT_ATTRS`.
     """
-    return frozenset({over} if name in _SCENARIO_INVARIANT else {over, SCENARIO})
+    from pypsa.constants import RE_INVARIANT_ATTRS
+
+    invariant = RE_INVARIANT_ATTRS.fullmatch(name) is not None
+    return frozenset({over} if invariant else {over, SCENARIO})
 
 
 def _keyed_as_entity(rel: DuckDBPyRelation, dim: str) -> DuckDBPyRelation:
@@ -1925,6 +1903,29 @@ def _shared_across_scenarios(rows: pd.DataFrame) -> pd.DataFrame:
     shared = rows.groupby("entity")["value"].transform("nunique", dropna=False).eq(1)
     folded = rows[shared].drop_duplicates("entity").assign(scenario=None)
     return pd.concat([folded, rows[~shared]], ignore_index=True)
+
+
+def _one_across_scenarios(
+    rows: pd.DataFrame, what: str, attr: str, con: DuckDBPyConnection
+) -> pd.DataFrame:
+    """`rows` as one row per entity at a NULL scenario, for an attribute not over `scenario`.
+
+    Raises
+    ------
+    ValueError
+        If an entity's values differ by scenario, NaN against a value too
+        (`_agreed`).
+    """
+    if rows["scenario"].isna().all():
+        return rows
+    by = rows.set_index("entity")["value"].groupby(
+        rows["scenario"].to_numpy(), sort=False
+    )
+    values = {s: v for s, v in by}
+    agreed = _agreed(what, attr, values, SCENARIO, con, "the scenarios")
+    return pd.DataFrame(
+        {"entity": agreed.index, "scenario": None, "value": agreed.array}
+    )
 
 
 # -- the tool ---------------------------------------------------------------
@@ -3107,7 +3108,11 @@ class _NetworkSource:
 
         A custom column has no default of its type to compare with.
         """
-        static = _shared_across_scenarios(_scalar_rows(self._own(c)[attr], exclude))
+        rows = _scalar_rows(self._own(c)[attr], exclude)
+        if SCENARIO in _static_dims(attr, _dim_of(c.name)):
+            static = _shared_across_scenarios(rows)
+        else:
+            static = _one_across_scenarios(rows, c.name, attr, self.con)
         undeclared = static
         if drop_defaults and attr in c.defaults.index:
             undeclared = _drop_default_rows(static, c.defaults.at[attr, "default"])

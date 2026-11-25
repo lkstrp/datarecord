@@ -116,8 +116,8 @@ Their `schema` is empty, because the record's names are PyPSA's.
 Its `port` axis lists ports 0 and 1, which PyPSA's registry declares, and any further port a connection has, in ascending order.
 So you can add a component's connections at ports 0 and 1 without adding a port first.
 Every other registry input is an attribute, `p_nom` among them.
-Every component attribute is over `scenario`, except those PyPSA keeps the same in every scenario.
-These are `active`, `build_year`, `committable`, `lifetime`, `weight`, `*_nom_extendable`, `*_nom_mod` and the results `*_nom_opt`.
+Every component attribute is over `scenario`, except those PyPSA keeps the same in every scenario: those matching PyPSA's own rule, `pypsa.constants.RE_INVARIANT_ATTRS`.
+An export refuses a network where such an attribute differs between scenarios, and the error names the component, the entity, the attribute and the value per scenario.
 
 ### `verify`
 

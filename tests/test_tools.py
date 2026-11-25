@@ -25,6 +25,7 @@ from datarecord import Revision, Workspace
 from datarecord.schema.specs import Dimension, PropertySpec
 from datarecord.tools.base import Schema, UnsupportedRecordError
 from datarecord.tools.pypsa import (
+    _WEIGHTINGS,
     CTYPE,
     PyPSA,
     PyPSACollection,
@@ -284,6 +285,18 @@ def _three_port_link(bus1: str = "b"):
     for bus in ("a", "b", "c"):
         n.add("Bus", bus)
     n.add("Link", "split", bus0="a", bus1=bus1, bus2="c")
+    return n
+
+
+def _scenario_generator():
+    """A generator `g` at bus `a`, in the scenarios `low` and `high`."""
+    import pypsa
+
+    n = pypsa.Network()
+    n.set_snapshots(pd.date_range("2020-01-01", periods=2, freq="h"))
+    n.add("Bus", "a")
+    n.add("Generator", "g", bus="a", p_nom=10.0)
+    n.set_scenarios({"low": 0.5, "high": 0.5})
     return n
 
 
@@ -2483,13 +2496,96 @@ class TestPyPSA:
         with pytest.raises(ValueError, match="'north' has `country` .* by scenario"):
             PyPSA.to_datarecord(n, workspace.con)
 
-    @pytest.mark.parametrize("attr", ["p_nom_extendable", "p_nom_opt"])
-    def test_only_pypsas_scenario_invariant_attributes_lack_the_scenario_dim(
-        self, attr
+    @pytest.mark.parametrize(
+        ("attr", "low", "high"),
+        [
+            ("committable", False, True),
+            ("build_year", 2020, 2030),
+            ("p_nom_set", 5.0, 7.0),
+            ("p_nom_set", np.nan, 5.0),
+        ],
+        ids=["committable", "build_year", "p_nom_set", "p_nom_set-nan"],
+    )
+    def test_an_invariant_attribute_differing_per_scenario_is_refused(
+        self, store, attr, low, high
     ):
-        """Every stored attribute may differ per scenario, but those PyPSA keeps invariant."""
-        dims = _registry().schema.attributes[attr].dims
-        assert "scenario" not in dims, dims
+        """PyPSA keeps the attribute the same in every scenario, so a difference is no network.
+
+        A default value in one scenario is still a difference, NaN against a
+        value too.
+
+        Notes
+        -----
+        - [entities and their properties](https://energy-models.github.io/datarecord/reference/tools/#entities)
+        """
+        n = _scenario_generator()
+        n.c.generators.static.loc[("low", "g"), attr] = low
+        n.c.generators.static.loc[("high", "g"), attr] = high
+
+        with pytest.raises(ValueError, match=f"'g' has `{attr}` .* by scenario"):
+            export_network(n, store)
+
+    @pytest.mark.parametrize(
+        ("attr", "value"),
+        [("p_nom_set", 5.0), ("active", True)],
+        ids=["p_nom_set", "active"],
+    )
+    def test_an_invariant_attribute_shared_across_scenarios_survives_a_round_trip(
+        self, store, attr, value
+    ):
+        """One value in every scenario is one shared row, back in each scenario.
+
+        Notes
+        -----
+        - [entities and their properties](https://energy-models.github.io/datarecord/reference/tools/#entities)
+        """
+        n = _scenario_generator()
+        n.c.generators.static[attr] = value
+
+        built = PyPSA.build(export_network(n, store).record)
+        assert built.c.generators.static[attr].to_dict() == {
+            ("low", "g"): value,
+            ("high", "g"): value,
+        }
+
+    def test_only_pypsas_scenario_invariant_attributes_lack_the_scenario_dim(self):
+        """Every stored attribute may differ per scenario, but those PyPSA's own rule keeps invariant.
+
+        The axis weightings are no component's attributes.
+
+        Notes
+        -----
+        - [entities and their properties](https://energy-models.github.io/datarecord/reference/tools/#entities)
+        """
+        from pypsa.constants import RE_INVARIANT_ATTRS
+
+        drifted = {
+            name: sorted(spec.dims)
+            for name, spec in _registry().schema.attributes.items()
+            if name not in _WEIGHTINGS
+            and ("scenario" in spec.dims)
+            != (RE_INVARIANT_ATTRS.fullmatch(name) is None)
+        }
+        assert not drifted, "over `scenario` exactly where PyPSA's rule does not match"
+
+    def test_a_delay_shared_across_scenarios_survives_a_round_trip(self, store):
+        """`delay` and `delay2` are invariant in PyPSA, so each port's delay is over its connection only.
+
+        Notes
+        -----
+        - [ports](https://energy-models.github.io/datarecord/reference/tools/#ports)
+        """
+        n = _three_port_link()
+        n.c["Link"].static.loc["split", ["delay", "delay2"]] = [1, 2]
+        n.set_scenarios({"low": 0.5, "high": 0.5})
+
+        record = export_network(n, store).record
+        assert "scenario" not in _registry().schema.attributes["delay"].dims
+        built = PyPSA.build(record)
+        assert built.c["Link"].static[["delay", "delay2"]].to_dict("index") == {
+            ("low", "split"): {"delay": 1, "delay2": 2},
+            ("high", "split"): {"delay": 1, "delay2": 2},
+        }, "one delay per port, the same in each scenario"
 
     @pytest.mark.parametrize(
         ("network", "ctype", "name", "static", "series", "attr", "default"),
@@ -2666,10 +2762,9 @@ class TestPyPSA:
             ("split", 1): 3,
             ("split", 2): 4,
         }, "port 0 of a Link has no delay"
-        assert _registry().schema.attributes["cyclic_delay"].dims == {
-            "connection",
-            "scenario",
-        }
+        assert _registry().schema.attributes["cyclic_delay"].dims == {"connection"}, (
+            "PyPSA keeps a delay the same in every scenario"
+        )
 
         built = PyPSA.build(export_network(n, store).record)
         assert built.c["Link"].static.loc["split", ["delay", "delay2"]].tolist() == [

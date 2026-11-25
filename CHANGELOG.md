@@ -25,6 +25,19 @@ All notable changes to datarecord are documented here. The format follows
   declares on a dimension of the network and the network lacks, such as a
   snapshot property another tool added. The store fills its column from
   `base`, where the store used to refuse the export as removing the property.
+- Breaking: the PyPSA dialect takes the attributes it declares without
+  `scenario` from PyPSA's own rule, `pypsa.constants.RE_INVARIANT_ATTRS`, in
+  place of a copied list that had drifted from it. `p_nom_set`, `s_nom_set`,
+  `e_nom_set`, `delay<n>` and `cyclic_delay<n>` lose their `scenario` dim, so
+  a record can no longer hold per-scenario values PyPSA's
+  `consistency_check()` rejects. An export refuses a network where such an
+  attribute differs between scenarios, NaN against a value too, naming the
+  component, the entity, the attribute and the value per scenario. Earlier
+  exports silently kept the non-default value of `committable`, `active` or
+  `*_nom_extendable` in every scenario, and refused a differing `build_year`
+  or `lifetime` with the writer's file-level message. A record that declares
+  `p_nom_set` over `scenario` still builds, but an export over it as `base` is
+  refused as narrowing its dims: re-export the root.
 
 ## v0.1.0a2 (2026-11-24)
 
