@@ -18,6 +18,12 @@ All notable changes to datarecord are documented here. The format follows
   Such a column used to read NULL. To set a property to NULL, a source writes
   its column with NULLs. A source's schema still declares every property of
   the parent.
+- A `WorkingRecord` checks a staged row for covering a base row only at the
+  patterns the staged rows name, as a frozen layer's fold has done since
+  v0.1.0a2. Before, it checked every subset of the `partial` dimensions a base
+  row sets, so a staged read grew with 2 to their number. A staged read of
+  200,000 rows over four `partial` dimensions drops from 1.4 s to 0.7 s, and
+  one over two stays as it was.
 
 ### Fixed
 

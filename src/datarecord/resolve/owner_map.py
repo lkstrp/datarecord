@@ -128,7 +128,7 @@ def fold_layer(
     if own is None:
         return kept
     own = keep(own)
-    kept = keep(_uncovered_by(kept, own, schema, frozen=refuse is not None))
+    kept = keep(_uncovered_by(kept, own, schema))
     crossing = pattern(schema.partial_dimensions, shape).bit_count() >= 2
     if refuse is not None:
         within = _meeting(kept, own, schema, shape, _not_within)
@@ -201,41 +201,34 @@ def _expanded(
 
 
 def _uncovered_by(
-    kept: DuckDBPyRelation, own: DuckDBPyRelation, schema: Schema, *, frozen: bool
+    kept: DuckDBPyRelation, own: DuckDBPyRelation, schema: Schema
 ) -> DuckDBPyRelation:
     """`kept` without each row a row of `own` covers naming no `partial` dimension it leaves NULL.
 
-    Each row of `kept` is expanded into one copy per subset of the set of
-    dimensions it sets, keyed by its labels there, which an own row naming exactly that
-    subset equals. A left join marks the covered copies, and a window over
-    the copies of each row's index keeps the row, as its copy over every
-    dimension it sets, where none is covered.
+    The distinct patterns the rows of `own` name are aggregated to one list,
+    cross-joined onto `kept`. Each row of `kept` is expanded into one copy
+    per listed pattern it sets a superset of, and one at its own pattern,
+    keyed by its labels there, which an own row naming exactly that pattern
+    equals. A left join marks the covered copies, and a window over the
+    copies of each row's index keeps the row, as its copy at its own
+    pattern, where none is covered. A probe per subset of the dimensions a
+    row sets would grow as 2 to their number.
 
-    `kept` is read once, on the left, and the window is partitioned by the
-    index, so a filter on `attribute` or a dimension reaches every scan of
-    `kept`, which the right side of a semi- or anti-join would not carry.
-
-    Parameters
-    ----------
-    frozen
-        Whether `own` is a frozen layer's rows, folded once: its copies are
-        then only the subsets some own row names, and the whole set. A read
-        folding a staged layer keeps every subset, a plan that aggregates no
-        own row first.
+    The list is read from `own` per query, so over a staged layer it reads
+    the staging tables each edit refreshes, and a plan built once sees later
+    edits. `kept` is read once, on the left, and the window is partitioned
+    by the index, so a filter on `attribute` or a dimension reaches every
+    scan of `kept`, which the right side of a semi- or anti-join would not
+    carry.
     """
     dims = schema.partial_dimensions
     columns = kept.columns
-    if frozen:
-        named = own.project(null_pattern(dims).alias("_q")).aggregate(
-            [sql("coalesce(list(DISTINCT _q), []) AS _named")]
-        )
-        choices = "list_filter(_named, lambda x: (x & _p) = x AND x <> _p)"
-        probe = _expanded(kept.cross(named), schema, sql(f"list_append({choices}, _p)"))
-        probe = probe.project(star(exclude=["_named"]))
-    else:
-        probe = _expanded(
-            kept, schema, sql("list_filter(range(_p + 1), lambda x: (x & _p) = x)")
-        )
+    named = own.project(null_pattern(dims).alias("_q")).aggregate(
+        [sql("coalesce(list(DISTINCT _q), []) AS _named")]
+    )
+    choices = "list_filter(_named, lambda x: (x & _p) = x AND x <> _p)"
+    probe = _expanded(kept.cross(named), schema, sql(f"list_append({choices}, _p)"))
+    probe = probe.project(star(exclude=["_named"]))
     keys = own.project(
         col("attribute").alias("_o_attribute"),
         null_pattern(dims).alias("_o__p"),

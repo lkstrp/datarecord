@@ -380,11 +380,11 @@ def _largest_intermediate(store, rel):
 
     def largest(node):
         return max(
-            [node.get("operator_cardinality") or 0]
+            [node.get("intermediate_rows") or 0]
             + [largest(child) for child in node.get("children", [])]
         )
 
-    return largest(profile)
+    return max(largest(node) for node in profile["operator"])
 
 
 def test_a_read_joins_no_more_rows_than_the_layers_hold(store):
@@ -1283,3 +1283,146 @@ def test_a_layer_keeps_the_owner_rows_of_a_shape_varying_outside_partial_alone(s
     shapes = rel.project("_shape").distinct().order("_shape").fetchall()
     assert tuple(s for (s,) in shapes) == kept, "the file holds the listed shapes"
     assert _misstamped(rel, _SERIES) == [], "each kept row is stamped with its shape"
+
+
+_FOUR_PARTIAL = Schema(
+    dimensions={
+        "entity": {"dtype": "str"},
+        "snapshot": {"dtype": "int"},
+        "scenario": {"dtype": "str"},
+        "carrier": {"dtype": "str"},
+    },
+    attributes={
+        "x": {
+            "dtype": "float",
+            "dims": ["entity", "snapshot", "scenario", "carrier"],
+        },
+        "y": {"dtype": "float", "dims": ["entity", "scenario", "carrier"]},
+    },
+    partial=frozenset({"entity", "snapshot", "scenario", "carrier"}),
+)
+
+
+def _four_partial_base(store):
+    """A root over `_FOUR_PARTIAL` whose rows set different subsets of its `partial` dimensions."""
+    staged = WorkingRecord(empty_root(store, _FOUR_PARTIAL).commit().record)
+    staged.add("entity", ["a", "b", "c"])
+    staged.add("snapshot", [0, 1])
+    staged.add("scenario", ["s1", "s2"])
+    staged.add("carrier", ["c1", "c2", "c3"])
+    staged.set("x", 1.0)
+    staged.set("x", 2.0, entity="a")
+    staged.set("x", 3.0, entity="b", snapshot=0)
+    staged.set("x", 4.0, scenario="s1", carrier="c1")
+    staged.set("x", 5.0, entity="c", snapshot=1, scenario="s2")
+    staged.set("x", 6.0, carrier="c3")
+    staged.set("y", 7.0, entity="a", scenario="s1")
+    staged.set("y", 8.0, carrier="c2")
+    return store.commit(staged)
+
+
+def _four_partial_edits(staged):
+    """Edits covering, crossing and leaving uncovered the rows of `_four_partial_base`.
+
+    `entity="b"` covers `(b, 0)`; `snapshot=1` crosses `entity="a"` and covers
+    `(c, 1, s2)`; `entity="a"`'s own pattern is named only at another label;
+    `(s1, c1)`'s pattern no staged row names; `carrier="c3"` goes with its label.
+    """
+    staged.add("entity", ["d"])
+    staged.add("scenario", ["s3"])
+    staged.set("x", 10.0, entity="b")
+    staged.set("x", 20.0, snapshot=1)
+    staged.set("x", 30.0, entity="c", carrier="c2")
+    staged.set("x", 40.0, entity="d", snapshot=0, scenario="s3", carrier="c1")
+    staged.set("y", 50.0, entity="a")
+    staged.set("y", 60.0, scenario="s2", carrier="c2")
+    staged.remove("carrier", ["c3"])
+
+
+_ALL_FOUR = ("entity", "snapshot", "scenario", "carrier")
+
+
+def _read_four(record):
+    return {
+        "x": broadcast(record, "x", *_ALL_FOUR),
+        "y": broadcast(record, "y", "entity", "scenario", "carrier"),
+    }
+
+
+def test_a_staged_fold_over_four_partial_dims_reads_as_its_commit(store):
+    """A staged read covers, crosses and keeps the base's rows as the committed edits read.
+
+    Notes
+    -----
+    - [the owner map](https://energy-models.github.io/datarecord/reference/resolution/#the-owner-map)
+    - [crossing rows](https://energy-models.github.io/datarecord/reference/resolution/#crossing-rows)
+    """
+    base = _four_partial_base(store)
+    staged = WorkingRecord(base.record)
+    _four_partial_edits(staged)
+    read = _read_four(staged)
+
+    assert read["x"][("b", 0, "s1", "c1")] == 10.0, "the covered row gives way"
+    assert read["x"][("a", 0, "s2", "c2")] == 2.0, "the uncovered row stays"
+    assert read == _read_four(store.commit(staged).record)
+
+
+def test_a_staged_fold_reads_an_edit_made_after_a_read(store):
+    """The staged fold is planned once per shape and still reads each later edit.
+
+    Notes
+    -----
+    - [reading with pending edits](https://energy-models.github.io/datarecord/reference/editing/)
+    - [the owner_map view](https://energy-models.github.io/datarecord/reference/format/#the-owner_map-view)
+    """
+    staged = WorkingRecord(_four_partial_base(store).record)
+    _four_partial_edits(staged)
+    staged.register("pinned")
+
+    def view():
+        return sorted(
+            staged.con.sql("FROM datarecord.pinned.owner_map").fetchall(), key=str
+        )
+
+    before, mapped = _read_four(staged), view()
+    staged.set("x", 70.0, scenario="s1")
+    after = _read_four(staged)
+
+    assert before["x"][("a", 1, "s1", "c1")] == 20.0
+    assert after["x"][("a", 1, "s1", "c1")] == 70.0, "the later set covers it"
+    assert after["x"][("a", 0, "s1", "c1")] == 70.0
+    assert after["x"][("a", 1, "s2", "c1")] == 20.0
+    assert view() != mapped, "the view follows the edit"
+    assert view() == sorted(staged._fold.owner_map.fetchall(), key=str)
+    staged.workspace.unregister("pinned")
+
+
+def test_a_staged_fold_probes_only_the_patterns_its_rows_name(store):
+    """A staged layer's covering probe holds a kept row once per pattern its rows name, plus its own.
+
+    Every base row sets all four `partial` dimensions; a probe per subset
+    of them would hold 16 copies of each.
+
+    Notes
+    -----
+    - [one plan for every layer](https://energy-models.github.io/datarecord/reference/resolution/#folding-a-layer-onto-its-parent)
+    """
+    staged = WorkingRecord(empty_root(store, _FOUR_PARTIAL).commit().record)
+    labels: dict[str, list] = {
+        "entity": [f"e{i}" for i in range(10)],
+        "snapshot": list(range(10)),
+        "scenario": [f"s{i}" for i in range(5)],
+        "carrier": [f"c{i}" for i in range(5)],
+    }
+    for d, ls in labels.items():
+        staged.add(d, ls)
+    rows = pd.DataFrame(product(*labels.values()), columns=list(labels))
+    staged.set("x", rows.assign(value=1.0))
+    staged = WorkingRecord(store.commit(staged).record)
+    staged.set("x", 2.0, entity="e0")
+    staged.set("x", 3.0, entity="e1", snapshot=0)
+
+    kept, named = len(rows), 2
+    assert _largest_intermediate(store, staged._owner_map) <= kept * (named + 1), (
+        "no operator holds more than a copy per named pattern of each kept row"
+    )
