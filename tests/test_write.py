@@ -1466,6 +1466,67 @@ def test_a_write_refuses_a_column_that_does_not_fit_its_dtype(
     _nothing_reachable(store)
 
 
+_CARRIERS = Schema(
+    dimensions={
+        "entity": Dimension(dtype="str"),
+        "carrier": Dimension(one_of=("AC", "DC")),
+    },
+    attributes={
+        "p_nom": AttributeSpec(dtype="float", dims=frozenset({"entity", "carrier"}))
+    },
+    properties={"entity": {"carrier": PropertySpec(one_of="carrier")}},
+)
+
+
+def _unlisted(file: str) -> _Source:
+    """A `_CARRIERS` source giving carrier `XX` in `file`, which `one_of` lacks."""
+    entities = pd.DataFrame({"entity": ["e0"]})
+    if file == "dimensions/entity.parquet":
+        frame = pd.DataFrame({"entity": ["e0"], "carrier": ["XX"]})
+        return _Source(
+            _CARRIERS,
+            dims={
+                "entity": entities,
+                "carrier": pd.DataFrame({"carrier": ["AC", "DC"]}),
+            },
+            properties={"entity": frame},
+        )
+    frame = pd.DataFrame(
+        {
+            "entity": ["e0"],
+            "carrier": ["XX"],
+            "attribute": "p_nom",
+            "breakpoint": None,
+            "value": [1.0],
+        }
+    )
+    return _Source(_CARRIERS, attributes={"p_nom": frame}, dims={"entity": entities})
+
+
+@pytest.mark.parametrize(
+    "file",
+    ["dimensions/entity.parquet", "attributes/p_nom.parquet"],
+    ids=["property", "attribute"],
+)
+def test_a_write_refuses_a_label_outside_one_of(store, file):
+    """A text label its dimension's `one_of` lacks is refused, naming the file and the allowed labels.
+
+    Text fits an enum by type, so only the labels can tell; they are read
+    only once the write's cast has failed.
+
+    Notes
+    -----
+    - [validation](https://energy-models.github.io/datarecord/reference/editing/#validation)
+    """
+    match = (
+        f"{file}: column 'carrier' gives labels \\['XX'\\].*"
+        "`one_of` is \\['AC', 'DC'\\]"
+    )
+    with pytest.raises(ValueError, match=match):
+        store.commit(_unlisted(file), parent=None)
+    _nothing_reachable(store)
+
+
 def _plant(p_nom: frozenset[str]) -> Schema:
     """Entities and scenarios, `p_nom` over `p_nom`."""
     return Schema(

@@ -23,7 +23,10 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from duckdb import ColumnExpression as col
+from duckdb import ConstantExpression as lit
+from duckdb import ConversionException
 from duckdb import StarExpression as star
+from duckdb.sqltypes import VARCHAR
 
 from datarecord.duck import anchored, as_relation, fn, null_safe, write_parquet
 from datarecord.protocols import LayerData, RecordLike, Relations
@@ -42,6 +45,7 @@ from datarecord.resolve.sources import (
     DirectorySource,
     refuse_foreign_columns,
 )
+from datarecord.schema.dtypes import enum_labels
 from datarecord.schema.schema import DERIVED, Schema, cast_declared
 from datarecord.settle import unsettled
 from datarecord.store.manifest import LayerFiles, Manifest
@@ -296,10 +300,13 @@ def _write_frame(
     Raises
     ------
     ValueError
-        As `Schema.require_takes` does.
+        As `Schema.require_takes` does, and where the declared-type cast fails
+        on a label its dimension's `one_of` does not hold, naming the file,
+        the column, the unknown labels and the `one_of` labels.
 
     Notes
     -----
+    - [types](https://energy-models.github.io/datarecord/reference/layers/#types)
     - [relations](https://energy-models.github.io/datarecord/reference/record/#relations)
     - [writing a whole record](https://energy-models.github.io/datarecord/reference/layers/)
     """
@@ -313,9 +320,60 @@ def _write_frame(
     subject = name if kind == "dimensions" else None
     attribute = name if kind == "attributes" else None
     rel = schema.require_takes(rel, file, subject, attribute)
-    rel = cast_declared(schema, rel, subject, attribute)
-    write_parquet(rel, uri, con, ordered=kind == "dimensions")
+    cast = cast_declared(schema, rel, subject, attribute)
+    try:
+        write_parquet(cast, uri, con, ordered=kind == "dimensions")
+    except ConversionException:
+        _refuse_unlisted(rel, file, schema, subject, attribute)
+        raise
     return uri
+
+
+_UNLISTED_SHOWN = 5
+"""How many unlisted labels a `_refuse_unlisted` error names."""
+
+
+def _refuse_unlisted(
+    rel: DuckDBPyRelation,
+    file: str,
+    schema: Schema,
+    subject: str | None,
+    attribute: str | None,
+) -> None:
+    """Refuse a label of `rel` outside the `one_of` of the column's declared enum.
+
+    Text fits an enum by type, so `require_takes` lets it pass and the write's
+    cast fails on the label. Only then are the enum columns' rows read, so a
+    write with valid labels reads none. Returns where no column holds such a
+    label, for the caller to re-raise the cast's own error.
+
+    Raises
+    ------
+    ValueError
+        Naming `file`, the column, up to `_UNLISTED_SHOWN` unknown labels and
+        the dimension's `one_of` labels.
+    """
+    for c in rel.columns:
+        found = schema.declared(c, subject, attribute)
+        labels = None if found is None else enum_labels(found[1])
+        if labels is None:
+            continue
+        text = col(c).cast(VARCHAR)
+        rows = (
+            rel.filter(col(c).isnotnull() & ~text.isin(*(lit(x) for x in labels)))
+            .select(text.alias(c))
+            .distinct()
+            .order(c)
+            .limit(_UNLISTED_SHOWN)
+            .fetchall()
+        )
+        if rows:
+            unknown = [r[0] for r in rows]
+            msg = (
+                f"{file}: column {c!r} gives labels {unknown}, which its "
+                f"dimension's `one_of` does not hold; `one_of` is {list(labels)}"
+            )
+            raise ValueError(msg)
 
 
 def _refuse_unordered(rel: DuckDBPyRelation, attribute: str, schema: Schema) -> None:

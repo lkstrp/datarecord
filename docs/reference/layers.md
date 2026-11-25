@@ -106,6 +106,7 @@ A refused layer stays pending, and no read opens it.
 
 The writer casts each column to its declared dtype, from a wider type of the same kind or from a column of NULLs alone.
 It refuses any other type, naming the attribute, property or dimension and its dtype.
+Text fits a dimension with `one_of` by type, so the writer refuses a label outside `one_of` only when the cast fails on it, naming the file, the column, the unknown labels and the `one_of` labels.
 
 ### Attribute files
 
