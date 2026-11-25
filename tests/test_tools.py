@@ -610,6 +610,44 @@ def test_the_record_layer_imports_no_tool():
     assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
 
 
+def test_the_tool_surface_is_pinned():
+    """`datarecord.tools` exports exactly the names a tool may rely on.
+
+    Notes
+    -----
+    - [what a tool may rely on](https://energy-models.github.io/datarecord/reference/tools/#what-a-tool-may-rely-on)
+    """
+    import datarecord.tools
+    import datarecord.tools.base
+    from datarecord.schema.schema import Schema as RecordSchema
+
+    surface = {
+        "Attr",
+        "Fold",
+        "Requirements",
+        "Schema",
+        "Tool",
+        "UnsupportedRecordError",
+        "empty_relation",
+        "ex_all",
+        "fn",
+        "join_on",
+        "matching",
+        "null_safe",
+        "scratch_table",
+        "uncovered",
+        "with_defaults",
+    }
+    assert set(datarecord.tools.__all__) == surface, (
+        "the tool surface changed; a change to it needs a changelog entry"
+    )
+    for name in surface:
+        assert getattr(datarecord.tools, name) is not None
+    assert datarecord.tools.Schema is datarecord.tools.base.Schema
+    for method in ("cast_declared", "packed", "unpacked"):
+        assert callable(getattr(RecordSchema, method))
+
+
 @pytest.fixture(scope="module")
 def two_generators(tmp_path_factory):
     """Generators `g1` and `g2` at bus `b` over scenarios `low` and `high`, exported once."""

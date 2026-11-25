@@ -77,6 +77,11 @@ An attribute with no entry keeps its name, so an empty `Schema` maps every name 
 
     [Present a framework object as a record](../howto/present-a-framework-object.md) shows a tool author's `to_datarecord`.
 
+### What a tool may rely on
+
+The names `datarecord.tools` exports (its `__all__`) and the record `Schema`'s methods are the contract a tool builds on between releases: the `Tool` protocol and its parts, and the [helpers](api/tools.md#helpers) for building relations.
+A change to any of them gets a changelog entry, so a tool pinned to a release moves to the next by reading the changelog.
+
 ## The PyPSA tool
 
 ```python

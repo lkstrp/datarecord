@@ -25,7 +25,6 @@ from datarecord.schema.schema import (
     LAYER_COLUMN,
     LAYER_UUID_TYPE,
     Schema,
-    cast_declared,
     per_schema,
     with_columns,
 )
@@ -94,8 +93,8 @@ def owner_map_rows(
 
 def _tagged(schema: Schema, rel: DuckDBPyRelation, layer: UUID) -> DuckDBPyRelation:
     """Layer `layer`'s attribute rows `rel`, padded to `schema`'s dimensions and cast, as `_flags` reads them."""
-    rel = cast_declared(
-        schema, with_columns(schema, rel, "breakpoint", *schema.dimensions)
+    rel = schema.cast_declared(
+        with_columns(schema, rel, "breakpoint", *schema.dimensions)
     )
     return rel.project(
         *(col(d) for d in schema.dimensions),

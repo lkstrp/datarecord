@@ -42,7 +42,7 @@ from datarecord.resolve.sources import (
     DirectorySource,
     refuse_foreign_columns,
 )
-from datarecord.schema.schema import DERIVED, Schema, cast_declared
+from datarecord.schema.schema import DERIVED, Schema
 from datarecord.settle import unsettled
 from datarecord.store.manifest import LayerFiles, Manifest
 
@@ -313,7 +313,7 @@ def _write_frame(
     subject = name if kind == "dimensions" else None
     attribute = name if kind == "attributes" else None
     rel = schema.require_takes(rel, file, subject, attribute)
-    rel = cast_declared(schema, rel, subject, attribute)
+    rel = schema.cast_declared(rel, subject, attribute)
     write_parquet(rel, uri, con, ordered=kind == "dimensions")
     return uri
 

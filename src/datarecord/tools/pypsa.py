@@ -55,7 +55,6 @@ from datarecord.protocols import Flags, LazyRelations, RecordLike, Relations
 from datarecord.resolve.fold import Fold
 from datarecord.schema.categories import matching, with_defaults
 from datarecord.schema.schema import Schema as RecordSchema
-from datarecord.schema.schema import cast_declared, packed, unpacked
 from datarecord.schema.specs import (
     AttributeSpec,
     Dimension,
@@ -244,7 +243,7 @@ class NetworkShape:
         rel = self.dimensions.get(SNAPSHOT)
         if rel is None:
             return pd.DataFrame(columns=[SNAPSHOT])
-        return unpacked(self.schema, SNAPSHOT, rel).df()
+        return self.schema.unpacked(SNAPSHOT, rel).df()
 
     @property
     def snapshot_levels(self) -> pd.DataFrame:
@@ -717,7 +716,7 @@ def _series_frame(
     group_by = list(shape.snapshots.columns)
     keys = shape.index_names
     columns = Index.of(static_index.set_names(keys), con).rel.set_alias("k")
-    rows = unpacked(shape.schema, SNAPSHOT, rows).set_alias("r")
+    rows = shape.schema.unpacked(SNAPSHOT, rows).set_alias("r")
     placed = (
         rows.join(columns, ex_all(col("r", k) == col("k", k) for k in keys))
         .join(
@@ -1270,7 +1269,7 @@ def _weightings(record: RecordLike, dim: str, table: pd.DataFrame) -> pd.DataFra
         if weighting.dim != dim or frame is None:
             continue
         rows = settle(frame, labels, overstated, filter=False)
-        rows = unpacked(record.schema, dim, rows.project(col(dim), col("value"))).df()
+        rows = record.schema.unpacked(dim, rows.project(col(dim), col("value"))).df()
         keys = [c for c in rows.columns if c != "value"]
         values = rows.set_index(keys)["value"].reindex(table.index)
         restored[weighting.column] = values.fillna(table[weighting.column])
@@ -2149,8 +2148,7 @@ class PyPSATool(Tool):
             for attr, flags in flagged.items():
                 if attr not in carried:
                     continue
-                long = unpacked(
-                    schema,
+                long = schema.unpacked(
                     CONNECTION,
                     self.schema.resolve(
                         record, ctype, attr, labels, flagged, filter=False
@@ -2781,8 +2779,8 @@ class _NetworkSource:
         """`_snapshot_rel` with each label's 1-based position in `n.snapshots` as `_pos`."""
         positions = np.arange(1, len(self._snapshots) + 1)
         rel = self.con.from_df(self._snapshots.assign(_pos=positions))
-        return cast_declared(
-            self.schema, rel.project(self._snapshot_column, col("_pos")), SNAPSHOT
+        return self.schema.cast_declared(
+            rel.project(self._snapshot_column, col("_pos")), SNAPSHOT
         )
 
     @cached_property
@@ -2797,9 +2795,7 @@ class _NetworkSource:
         """The one `snapshot` column the schema declares, over the columns of `_snapshots`."""
         if SNAPSHOT not in self.schema.multi_dimensions:
             return col(SNAPSHOT)
-        return packed(self.schema, SNAPSHOT, self._snapshots.columns, {}).alias(
-            SNAPSHOT
-        )
+        return self.schema.packed(SNAPSHOT, self._snapshots.columns, {}).alias(SNAPSHOT)
 
     @cached_property
     def _sub_networks(self) -> pd.DataFrame:
@@ -2859,7 +2855,7 @@ class _NetworkSource:
             if dim == SNAPSHOT:
                 return self._snapshot_rel
             frame = self._entity_frame if dim == ENTITY else self._axes[dim]
-            return cast_declared(self.schema, self.con.from_df(frame[[dim]]), dim)
+            return self.schema.cast_declared(self.con.from_df(frame[[dim]]), dim)
 
         return LazyRelations((*present, ENTITY, CONNECTION), axis)
 
@@ -2916,7 +2912,7 @@ class _NetworkSource:
         """`_connections` as the `connection` axis, `connection.bus` beside it."""
         flat = self.con.from_df(self._connections)
         return flat.project(
-            packed(self.schema, CONNECTION, flat.columns, {}).alias(CONNECTION),
+            self.schema.packed(CONNECTION, flat.columns, {}).alias(CONNECTION),
             star(exclude=[ENTITY, PORT]),
         )
 
@@ -3297,7 +3293,7 @@ class _NetworkSource:
                 rel = self.con.from_df(self._axes[subject])
             declared = {subject, *self.schema.properties[subject]}
             kept = rel.project(*(col(c) for c in rel.columns if c in declared))
-            return cast_declared(self.schema, kept, subject)
+            return self.schema.cast_declared(kept, subject)
 
         return LazyRelations(subjects, frame)
 
@@ -3394,7 +3390,7 @@ class _NetworkSource:
             .project(
                 *(col(name) for name in rel.columns if name != ENTITY),
                 *tags,
-                packed(self.schema, CONNECTION, [ENTITY], {PORT: port}).alias(
+                self.schema.packed(CONNECTION, [ENTITY], {PORT: port}).alias(
                     CONNECTION
                 ),
             )
@@ -3612,7 +3608,7 @@ class _ResultsSource(_NetworkSource):
             for name in _live(c, self._periods)
         ]
         frame = pd.DataFrame({ENTITY: pd.Series(names, dtype=object)})
-        return cast_declared(self.schema, self.con.from_df(frame))
+        return self.schema.cast_declared(self.con.from_df(frame))
 
     @cached_property
     def _holds(self) -> dict[str, DuckDBPyRelation]:
@@ -3621,8 +3617,7 @@ class _ResultsSource(_NetworkSource):
         if self.n.has_scenarios:
             frames[SCENARIO] = self.n.scenarios.to_frame(index=False)
         labels = {
-            d: cast_declared(self.schema, self.con.from_df(f))
-            for d, f in frames.items()
+            d: self.schema.cast_declared(self.con.from_df(f)) for d, f in frames.items()
         }
         return {**labels, CONNECTION: self._connection_frame.project(col(CONNECTION))}
 
@@ -3664,7 +3659,7 @@ class _ResultsSource(_NetworkSource):
     def _sub_network_rel(self) -> DuckDBPyRelation:
         """`_sub_networks` with its columns typed as the schema declares them, not as an empty frame infers them."""
         rel = self.con.from_df(self._sub_networks)
-        return cast_declared(self.schema, rel, SUB_NETWORK)
+        return self.schema.cast_declared(rel, SUB_NETWORK)
 
     def _dead_sub_networks(self) -> DuckDBPyRelation | None:
         """The record's SubNetworks this solve does not number, aliased `d`; `None` where it has no axis."""
@@ -3898,7 +3893,7 @@ def _axis_union(
     """
     fields = list(schema.over(subject)) or [subject]
     frames = {
-        label: unpacked(schema, subject, rel).df().set_index(fields)
+        label: schema.unpacked(subject, rel).df().set_index(fields)
         for label, rel in held.items()
     }
     order = _ordered_union(subject, {label: f.index for label, f in frames.items()}, by)
@@ -3910,9 +3905,9 @@ def _axis_union(
     frame = pd.DataFrame(agreed, index=order, columns=columns)
     rel = con.from_df(frame.reset_index(names=fields))
     if subject in schema.multi_dimensions:
-        struct = packed(schema, subject, fields, {}).alias(subject)
+        struct = schema.packed(subject, fields, {}).alias(subject)
         rel = rel.project(struct, *map(col, columns))
-    return cast_declared(schema, rel, subject)
+    return schema.cast_declared(rel, subject)
 
 
 def _labelled(
@@ -3925,7 +3920,7 @@ def _labelled(
     def at(label: Any, rel: DuckDBPyRelation) -> DuckDBPyRelation:
         labelled = lit(label).cast(label_type).alias(dim)
         rows = rel.select(*(labelled if c == dim else col(c) for c in columns))
-        return cast_declared(schema, rows, attribute=attr)
+        return schema.cast_declared(rows, attribute=attr)
 
     return reduce(DuckDBPyRelation.union, (at(*item) for item in held.items()))
 
@@ -4023,7 +4018,7 @@ class _StackedSource:
         schema = _widened(schema, dim, labels, differing)
         if not apart:
             axis = con.from_df(pd.DataFrame({dim: labels}))
-            dims[dim] = cast_declared(schema, axis, dim)
+            dims[dim] = schema.cast_declared(axis, dim)
         rows = {
             attr: _labelled(schema, attr, held[attr], dim)
             if attr in differing
@@ -4060,7 +4055,7 @@ def _record_connections(record: RecordLike) -> pd.DataFrame | None:
     frame = record.properties.get(CONNECTION)
     if frame is None:
         return None
-    return unpacked(record.schema, CONNECTION, frame).df()
+    return record.schema.unpacked(CONNECTION, frame).df()
 
 
 def _tuples_of(tuples: DuckDBPyRelation, members: DuckDBPyRelation) -> DuckDBPyRelation:

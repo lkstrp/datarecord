@@ -71,7 +71,6 @@ from datarecord.schema.schema import (
     FLAG_COLUMNS,
     LAYER_COLUMN,
     Schema,
-    cast_declared,
     empty_declared,
     with_columns,
 )
@@ -676,7 +675,7 @@ def _fold_map(
     keyed, held, dead = schema, dict.fromkeys(_pruned(schema)), {}
     if base is not None:
         keyed, dead = base.axes.schema, base.axes.dead
-        maps = _by_shape(cast_declared(keyed, base.owner_map), keyed)
+        maps = _by_shape(keyed.cast_declared(base.owner_map), keyed)
         held = {name: base.axes.get(name) for name in _pruned(schema)}
     restates = restated(above, held, dead)
     if made is None:
@@ -1080,7 +1079,7 @@ def _frozen_table(
     if isinstance(last, ParquetLayer) and last.layer_id == revision_id:
         rel = read_owner_map(revision_id, con, last.store)
         if rel is not None:
-            return cast_declared(last.schema, rel)
+            return last.schema.cast_declared(rel)
     return shared_table(
         con,
         last.workspace.name,

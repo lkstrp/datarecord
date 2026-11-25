@@ -18,7 +18,7 @@ datarecord/
 │   ├── __init__.py    # re-exports Schema, Dimension, AttributeSpec, PropertySpec
 │   ├── dtypes.py      # DUCK_TYPES, enum_type, enum_labels, takes
 │   ├── specs.py       # Dimension, AttributeSpec, PropertySpec
-│   ├── schema.py      # Schema, flag_type, LAYER_COLUMN, LONG_TAIL, DERIVED, packed, unpacked, cast_declared, with_columns
+│   ├── schema.py      # Schema, flag_type, LAYER_COLUMN, LONG_TAIL, DERIVED, with_columns
 │   └── categories.py  # selecting a categorised dimension's labels, and their defaults
 ├── settle.py          # settle, uncovered, unsettled: the broadcast rule over long rows
 ├── select.py          # select, Selection
@@ -39,7 +39,7 @@ datarecord/
 │   ├── write.py       # write_layer, layer_data
 │   └── store.py       # Workspace, Store, Claim, Revision, ancestry
 └── tools/
-    ├── __init__.py    # imports no tool module
+    ├── __init__.py    # re-exports the tool contract and helpers, imports no tool module
     ├── base.py        # Tool, Schema, Attr, Requirements, UnsupportedRecordError
     └── pypsa.py       # PyPSA, PyPSACollection
 ```

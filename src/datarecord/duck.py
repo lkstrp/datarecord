@@ -62,6 +62,7 @@ class _Functions:
 
 
 fn = _Functions()
+"""DuckDB's functions as attributes, each a partial of `duckdb.fn`."""
 
 #: The schema each revision's fold is kept in, as a schema of its own inside.
 FOLD = "_fold"

@@ -1108,6 +1108,81 @@ class Schema(_Declared):
         duck = self.duck_type(spec)
         return name, duck, f"{_typed_as(spec)} ({duck})"
 
+    def packed(
+        self, multi: str, present: Container[str], dims: Mapping[str, Any]
+    ) -> Expression:
+        """The struct column of the multi-dimension `multi`, packed from flat field columns.
+
+        A field is the column of that name where the relation carries one, else
+        the caller's keyword. No field given at all is a NULL struct, every tuple.
+
+        Raises
+        ------
+        ValueError
+            Where some fields are given and others not: a struct NULL in some
+            fields and not all matches no tuple.
+
+        Notes
+        -----
+        - [multi-dimensions](https://energy-models.github.io/datarecord/reference/data-model/#multi-dimensions)
+        - [the broadcast rule](https://energy-models.github.io/datarecord/reference/data-model/#the-broadcast-rule)
+        """
+        over = self.over(multi)
+        struct = self.duck_type(self.dimensions[multi])
+        missing = [c for c in over if c not in present and c not in dims]
+        if len(missing) == len(over):
+            return lit(None).cast(struct)
+        if missing:
+            msg = (
+                f"{multi!r} has the fields {list(over)}, and {missing} was not given; "
+                f"name it as a keyword, e.g. `{missing[0]}=...` (https://energy-models.github.io/datarecord/reference/data-model/#multi-dimensions)"
+            )
+            raise ValueError(msg)
+        fields = {
+            c: col(c)
+            if c in present
+            else lit(dims[c]).cast(self.duck_type(self.dimensions[d]))
+            for c, d in over.items()
+        }
+        return fn.struct_pack(**fields).cast(struct)
+
+    def unpacked(self, multi: str, rel: DuckDBPyRelation) -> DuckDBPyRelation:
+        """`rel` with the struct column of the multi-dimension `multi` spelled as a column per field, first; as it is where it carries no such column.
+
+        Notes
+        -----
+        - [multi-dimensions](https://energy-models.github.io/datarecord/reference/data-model/#multi-dimensions)
+        """
+        if multi not in rel.columns or multi not in self.multi_dimensions:
+            return rel
+        return rel.project(
+            *(col(multi)[c].alias(c) for c in self.over(multi)),
+            *(col(c) for c in rel.columns if c != multi),
+        )
+
+    def cast_declared(
+        self,
+        rel: DuckDBPyRelation,
+        subject: str | None = None,
+        attribute: str | None = None,
+    ) -> DuckDBPyRelation:
+        """Return `rel` with each column the schema declares a type for cast to that type.
+
+        Other columns are left as they are. `subject` and `attribute` are as in
+        `declared`.
+
+        Notes
+        -----
+        - [the long schema](https://energy-models.github.io/datarecord/reference/format/#attributesattrparquet)
+        """
+        cols = [
+            col(c).cast(found[1]).alias(c)
+            if (found := self.declared(c, subject, attribute))
+            else col(c)
+            for c in rel.columns
+        ]
+        return rel.project(*cols)
+
     def require_takes(
         self,
         rel: DuckDBPyRelation,
@@ -1241,84 +1316,6 @@ class Schema(_Declared):
                     f"outside `partial`"
                 )
         return problems
-
-
-def packed(
-    schema: Schema, multi: str, present: Container[str], dims: Mapping[str, Any]
-) -> Expression:
-    """The struct column of the multi-dimension `multi`, packed from flat field columns.
-
-    A field is the column of that name where the relation carries one, else
-    the caller's keyword. No field given at all is a NULL struct, every tuple.
-
-    Raises
-    ------
-    ValueError
-        Where some fields are given and others not: a struct NULL in some
-        fields and not all matches no tuple.
-
-    Notes
-    -----
-    - [multi-dimensions](https://energy-models.github.io/datarecord/reference/data-model/#multi-dimensions)
-    - [the broadcast rule](https://energy-models.github.io/datarecord/reference/data-model/#the-broadcast-rule)
-    """
-    over = schema.over(multi)
-    struct = schema.duck_type(schema.dimensions[multi])
-    missing = [c for c in over if c not in present and c not in dims]
-    if len(missing) == len(over):
-        return lit(None).cast(struct)
-    if missing:
-        msg = (
-            f"{multi!r} has the fields {list(over)}, and {missing} was not given; "
-            f"name it as a keyword, e.g. `{missing[0]}=...` (https://energy-models.github.io/datarecord/reference/data-model/#multi-dimensions)"
-        )
-        raise ValueError(msg)
-    fields = {
-        c: col(c)
-        if c in present
-        else lit(dims[c]).cast(schema.duck_type(schema.dimensions[d]))
-        for c, d in over.items()
-    }
-    return fn.struct_pack(**fields).cast(struct)
-
-
-def unpacked(schema: Schema, multi: str, rel: DuckDBPyRelation) -> DuckDBPyRelation:
-    """`rel` with the struct column of the multi-dimension `multi` spelled as a column per field, first; as it is where it carries no such column.
-
-    Notes
-    -----
-    - [multi-dimensions](https://energy-models.github.io/datarecord/reference/data-model/#multi-dimensions)
-    """
-    if multi not in rel.columns or multi not in schema.multi_dimensions:
-        return rel
-    return rel.project(
-        *(col(multi)[c].alias(c) for c in schema.over(multi)),
-        *(col(c) for c in rel.columns if c != multi),
-    )
-
-
-def cast_declared(
-    schema: Schema,
-    rel: DuckDBPyRelation,
-    subject: str | None = None,
-    attribute: str | None = None,
-) -> DuckDBPyRelation:
-    """Return `rel` with each column the schema declares a type for cast to that type.
-
-    Other columns are left as they are. `subject` and `attribute` are as in
-    `Schema.declared`.
-
-    Notes
-    -----
-    - [the long schema](https://energy-models.github.io/datarecord/reference/format/#attributesattrparquet)
-    """
-    cols = [
-        col(c).cast(found[1]).alias(c)
-        if (found := schema.declared(c, subject, attribute))
-        else col(c)
-        for c in rel.columns
-    ]
-    return rel.project(*cols)
 
 
 def empty_declared(

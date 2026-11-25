@@ -33,7 +33,6 @@ from datarecord.resolve.owner_map_rows import (
     _mask,
     _owned_by,
 )
-from datarecord.schema.schema import cast_declared
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -275,7 +274,7 @@ class _FileLayer:
             return None
         rel = self.workspace.con.read_parquet(self.uri(OWNER_MAP_ROWS_FILE))
         rel = rel.filter(col(SHAPE_COLUMN) == _mask(self.schema, shape))
-        rel = cast_declared(self.schema, rel.filter(_isin(listed)))
+        rel = self.schema.cast_declared(rel.filter(_isin(listed)))
         return _owned_by(rel, self.schema, self.layer_id)
 
     def materialised(self) -> Fold | None:

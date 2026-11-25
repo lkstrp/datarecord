@@ -11,13 +11,28 @@ All notable changes to datarecord are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `datarecord.tools` re-exports the tool contract and the helpers a tool builds
+  on, under `__all__`: `Tool`, `Requirements`, `Schema`, `Attr`,
+  `UnsupportedRecordError`, `ex_all`, `fn`, `scratch_table`, `empty_relation`,
+  `join_on`, `null_safe`, `uncovered`, `matching`, `with_defaults` and `Fold`.
+  A change to any of these names gets a changelog entry.
+
 ### Changed
 
+- `cast_declared`, `packed` and `unpacked` are now methods of the record
+  `Schema`, without the schema argument.
 - A commit under a parent fills each property column that an axis file the
   layer writes lacks with the parent's values, by label, NULL on a new label.
   Such a column used to read NULL. To set a property to NULL, a source writes
   its column with NULLs. A source's schema still declares every property of
   the parent.
+
+### Removed
+
+- The module-level `cast_declared`, `packed` and `unpacked` in
+  `datarecord.schema.schema`.
 
 ### Fixed
 

@@ -62,7 +62,7 @@ from datarecord.resolve.owner_map_rows import Shape, owner_map_rows, shape_of
 from datarecord.resolve.record import Record, _empty_long, _PerCursor
 from datarecord.schema.categories import matching
 from datarecord.schema.dtypes import takes
-from datarecord.schema.schema import Schema, packed, unpacked
+from datarecord.schema.schema import Schema
 from datarecord.settle import has_pattern, null_patterns, uncovered, unsettled
 
 if TYPE_CHECKING:
@@ -1435,7 +1435,7 @@ class WorkingRecord(Record):
             if d in present:
                 return col(d)
             if d in self.schema.multi_dimensions_of(attribute):
-                return packed(self.schema, d, present, dims).alias(d)
+                return self.schema.packed(d, present, dims).alias(d)
             return lit(dims.get(d)).cast(self._column_type(d)).alias(d)
 
         own_dims = self.schema.dimensions_of(attribute)
@@ -1955,7 +1955,7 @@ class WorkingRecord(Record):
             )
             raise ValueError(msg)
         return rel.project(
-            packed(self.schema, multi, rel.columns, {}).alias(multi),
+            self.schema.packed(multi, rel.columns, {}).alias(multi),
             *(col(c) for c in rel.columns if c not in over),
         )
 
@@ -2237,7 +2237,7 @@ def _unpacked(
             f"tuples of {multi!r} as a struct of its fields {list(over)}"
         )
         raise ValueError(msg)
-    return unpacked(schema, multi, rel)
+    return schema.unpacked(multi, rel)
 
 
 def _axis_columns(schema: Schema, dim: str) -> dict[str, DuckDBPyType]:
